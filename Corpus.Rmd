@@ -1,0 +1,888 @@
+---
+title: "Corpus"
+output: html_document
+date: "2024-08-29"
+---
+
+# Load library
+
+```{r, echo=FALSE}
+
+library(rvest)
+library(httr)
+library(readxl)
+library(pdftools)
+library(tidyverse)
+library(cld2)
+library(officer) 
+library(openxlsx) 
+library(stringr)
+library(conflicted)
+library(curl)
+library(utils)
+library(quanteda)
+library(tm)
+library(textcat)
+library(tesseract)
+library(fs)
+library(magick)
+library(readtext)
+library(dplyr)
+library(tools)
+
+```
+
+
+
+```{r}
+
+MDL <- read_excel("C:/Users/PANA/Desktop/MDL_20240716_withLangA.xlsx")  
+
+
+```
+
+
+
+
+```{r}
+
+# Function to process PDF files
+process_pdf <- function(file_path) {
+  text_from_pdf <- tryCatch({
+    pdf_text(file_path)
+  }, error = function(e) {
+    return(NULL)
+  })
+  
+  if (is.null(text_from_pdf)) {
+    return(NULL)
+  }
+  
+  combined_text <- paste(text_from_pdf, collapse = " ")
+  return(combined_text)
+}
+
+# Function to process Word files
+process_word <- function(file_path) {
+  doc <- tryCatch({
+    read_docx(file_path)
+  }, error = function(e) {
+    return(NULL)
+  })
+  
+  if (is.null(doc)) {
+    return(NULL)
+  }
+  
+  text_from_word <- docx_summary(doc)$text
+  combined_text <- paste(text_from_word, collapse = " ")
+  return(combined_text)
+}
+
+# Function to process Excel or CSV files
+process_excel_or_csv <- function(file_path) {
+  file_extension <- tools::file_ext(file_path)
+  
+  if (file_extension %in% c("xlsx", "xls")) {
+    sheets <- tryCatch({
+      excel_sheets(file_path)
+    }, error = function(e) {
+      return(NULL)
+    })
+    
+    if (is.null(sheets)) {
+      return(NULL)
+    }
+    
+    all_data <- lapply(sheets, function(sheet) {
+      tryCatch({
+        read_excel(file_path, sheet = sheet)
+      }, error = function(e) {
+        return(NULL)
+      })
+    })
+    
+    all_data <- Filter(Negate(is.null), all_data)
+    
+    if (length(all_data) == 0) {
+      return(NULL)
+    }
+    
+    all_texts <- unlist(lapply(all_data, function(df) {
+      apply(df, 2, function(column) {
+        as.character(column)
+      })
+    }))
+  } else if (file_extension == "csv") {
+    all_texts <- tryCatch({
+      read_csv(file_path, col_types = cols(.default = "c")) %>% 
+        unlist() %>% 
+        as.character()
+    }, error = function(e) {
+      return(NULL)
+    })
+    
+    if (is.null(all_texts)) {
+      return(NULL)
+    }
+  } else {
+    return(NULL)
+  }
+  
+  combined_text <- paste(all_texts, collapse = " ")
+  return(combined_text)
+}
+
+# Function to process HTML files
+process_html <- function(file_path) {
+  html_text <- tryCatch({
+    readtext(file_path)$text
+  }, error = function(e) {
+    return(NULL)
+  })
+  
+  if (is.null(html_text)) {
+    return(NULL)
+  }
+  
+  return(html_text)
+}
+
+# Function to process ZIP files
+process_zip <- function(zip_path, extract_dir) {
+  result <- tryCatch({
+    unzip(zip_path, exdir = extract_dir)
+    list.files(extract_dir, full.names = TRUE)
+  }, warning = function(w) {
+    message("Warning during unzip: ", w)
+    return(NULL)
+  }, error = function(e) {
+    message("Error during unzip: ", e)
+    return(NULL)
+  })
+  
+  return(result)
+}
+
+# Directory containing the folders
+directory_path <- "C:/Users/PANA/OneDrive - UNHCR/MDL/Q_DownloadJuly16"
+
+# List all subdirectories in the directory
+folder_names <- list.dirs(directory_path, full.names = FALSE, recursive = FALSE)
+
+# Initialize an empty data frame
+CORPUS <- data.frame(ID = character(), Text = character(), stringsAsFactors = FALSE)
+
+# Process each folder
+for (id in folder_names) {
+  folder_path <- file.path(directory_path, id)
+  
+  if (!dir.exists(folder_path)) {
+    next  # Skip if the folder doesn't exist
+  }
+  
+  files <- list.files(folder_path, full.names = TRUE)
+  
+  combined_text <- c()
+  
+  for (file_path in files) {
+    file_extension <- tools::file_ext(file_path)
+    
+    text_content <- tryCatch({
+      if (file_extension == "pdf") {
+        process_pdf(file_path)
+      } else if (file_extension == "docx") {
+        process_word(file_path)
+      } else if (file_extension %in% c("xlsx", "xls", "csv")) {
+        process_excel_or_csv(file_path)
+      } else if (file_extension == "html") {
+        process_html(file_path)
+      } else if (file_extension == "zip") {
+        extract_dir <- tempfile()
+        extracted_files <- process_zip(file_path, extract_dir)
+        if (!is.null(extracted_files)) {
+          lapply(extracted_files, function(extracted_file) {
+            combined_text <<- c(combined_text, process_pdf(extracted_file))
+          })
+        }
+        NULL
+      } else {
+        NULL
+      }
+    }, error = function(e) {
+      NULL
+    })
+    
+    if (!is.null(text_content)) {
+      combined_text <- c(combined_text, text_content)
+    }
+  }
+  
+  if (length(combined_text) > 0) {
+    combined_text <- paste(combined_text, collapse = " ")
+  } else {
+    combined_text <- NA
+  }
+  
+  CORPUS <- rbind(CORPUS, data.frame(ID = id, Text = combined_text, stringsAsFactors = FALSE))
+}
+
+
+
+```
+
+
+
+
+
+
+
+
+
+```{r}
+
+CORPUS <- merge(CORPUS, MDL[, c("ID", "Availability_EN")], by = "ID", all.x = TRUE)
+
+```
+
+
+
+
+```{r}
+
+MDL <- merge(MDL, CORPUS[, c("ID", "Text")], by = "ID", all.x = TRUE)
+
+```
+
+
+
+
+```{r}
+
+saveRDS(CORPUS, "C:/Users/PANA/Desktop/CORPUS.rds")
+
+```
+
+
+# Load Corpus
+
+```{r}
+
+CORPUS <- readRDS("C:/Users/PANA/OneDrive - UNHCR/MDL/Data/CORPUS.rds")
+
+```
+
+
+
+# EGRISS RELATED LANGUAGE
+
+
+```{r}
+
+# 1. Create IDP Questions variable
+CORPUS <- CORPUS %>%
+  mutate(IDP_Questions = case_when(
+    str_detect(tolower(Text), "forced to flee|obliged to flee") ~ 1,
+    str_detect(tolower(Text), "reason flee") ~ 2,
+    str_detect(tolower(Text), "living before forced to flee|residence before you were forced to leave") ~ 3,
+    str_detect(tolower(Text), "cross international border") ~ 4,
+    str_detect(tolower(Text), "length stay abroad|how long stay abroad") ~ 5,
+    str_detect(tolower(Text), "legal document|legal status|primary document to stay") ~ 6,
+    str_detect(tolower(Text), "usual place of residence") ~ 7,
+    TRUE ~ NA_real_  # If none of the conditions match, return NA
+  ))
+
+# 2. Create Refugee Questions variable
+CORPUS <- CORPUS %>%
+  mutate(Refugee_Questions = case_when(
+    str_detect(tolower(Text), "always lived in") ~ "1",
+    str_detect(tolower(Text), "which country a citizen") ~ "2",
+    str_detect(tolower(Text), "ever had to flee home") ~ "3",
+    str_detect(tolower(Text), "reason to flee home") ~ "4",
+    str_detect(tolower(Text), "cross international border") ~ "5",
+    str_detect(tolower(Text), "how long stay abroad") ~ "6",
+    str_detect(tolower(Text), "apply for international protection") ~ "7",
+    str_detect(tolower(Text), "intention to apply for international protection") ~ "8",
+    str_detect(tolower(Text), "outcome application international protection") ~ "9",
+    str_detect(tolower(Text), "the primary document to stay|legal document|legal status") ~ "10",
+    TRUE ~ NA_character_  # If none of the conditions match, return NA
+  ))
+
+# Handle cases where Text matches more than one condition
+CORPUS <- CORPUS %>%
+  rowwise() %>%
+  mutate(Refugee_Questions = paste(na.omit(c(
+    if_else(str_detect(tolower(Text), "always lived in"), "1", NA_character_),
+    if_else(str_detect(tolower(Text), "which country a citizen"), "2", NA_character_),
+    if_else(str_detect(tolower(Text), "ever had to flee home"), "3", NA_character_),
+    if_else(str_detect(tolower(Text), "reason to flee home"), "4", NA_character_),
+    if_else(str_detect(tolower(Text), "cross international border"), "5", NA_character_),
+    if_else(str_detect(tolower(Text), "how long stay abroad"), "6", NA_character_),
+    if_else(str_detect(tolower(Text), "apply for international protection"), "7", NA_character_),
+    if_else(str_detect(tolower(Text), "intention to apply for international protection"), "8", NA_character_),
+    if_else(str_detect(tolower(Text), "outcome application international protection"), "9", NA_character_),
+    if_else(str_detect(tolower(Text), "the primary document to stay|legal document|legal status"), "10", NA_character_)
+  )), collapse = ", ")) %>%
+  ungroup()
+
+
+```
+
+
+
+# Household Survey Recommended Questions
+## Ignore order
+
+
+```{r}
+
+
+
+words_in_text <- function(text, words) {
+  all(sapply(strsplit(words, "\\s+")[[1]], function(word) str_detect(text, word)))
+}
+
+
+CORPUS <- CORPUS %>%
+  rowwise() %>%
+  mutate(IDP_Questions = paste(na.omit(c(
+    if_else(words_in_text(tolower(Text), "forced to flee") | words_in_text(tolower(Text), "obliged to flee") | words_in_text(tolower(Text), "have you ever had to flee home"), "1", NA_character_),
+    if_else(words_in_text(tolower(Text), "reason decide to flee") | words_in_text(tolower(Text), "reason you had to flee home"), "2", NA_character_),
+    if_else(words_in_text(tolower(Text), "living before forced to flee") | words_in_text(tolower(Text), "residence before forced to leave") | words_in_text(tolower(Text), "living right before forced to flee home for the first time"), "3", NA_character_),
+    if_else(words_in_text(tolower(Text), "cross international border forced to flee") | words_in_text(tolower(Text), "after forced to flee cross an international border"),  "4", NA_character_),
+    if_else(words_in_text(tolower(Text), "length stay abroad") | words_in_text(tolower(Text), "how long stay abroad") | words_in_text(tolower(Text), "how long did you stay abroad less than 12 months more than 12 months"), "5", NA_character_),
+    if_else(words_in_text(tolower(Text), "legal document to stay") | words_in_text(tolower(Text), "what is legal status") | words_in_text(tolower(Text), "primary document to stay"), "6", NA_character_),
+    if_else(words_in_text(tolower(Text), "usual place of residence") | words_in_text(tolower(Text), "where did you move first"), "7", NA_character_)
+  )), collapse = ", ")) %>%
+  ungroup()
+
+
+
+CORPUS <- CORPUS %>%
+  rowwise() %>%
+  mutate(Refugee_Questions = paste(na.omit(c(
+    if_else(words_in_text(tolower(Text), "have you always lived in"), "1", NA_character_),
+    if_else(words_in_text(tolower(Text), "which country a citizen")| words_in_text(tolower(Text), "country citizenship"), "2", NA_character_),
+    if_else(words_in_text(tolower(Text), "ever had to flee"), "3", NA_character_),
+    if_else(words_in_text(tolower(Text), "ever had to flee"), "4", NA_character_),
+    if_else(words_in_text(tolower(Text), "reason you decide to flee") | words_in_text(tolower(Text), "reason you had to flee home"), "5", NA_character_),
+    if_else(words_in_text(tolower(Text), "cross international border forced to flee"), "6", NA_character_),
+    if_else(words_in_text(tolower(Text), "how long stay abroad") | words_in_text(tolower(Text), "how long did you stay abroad less than 12 months more than 12 months"), "7", NA_character_),
+    if_else(words_in_text(tolower(Text), "apply for international protection"), "8", NA_character_),
+    if_else(words_in_text(tolower(Text), "intention to apply for international protection"), "9", NA_character_),
+    if_else(words_in_text(tolower(Text), "outcome application international protection"), "10", NA_character_),
+    if_else(words_in_text(tolower(Text), "the primary document to stay") | words_in_text(tolower(Text), "legal document to stay") | words_in_text(tolower(Text), "what legal status"), "11", NA_character_)
+  )), collapse = ", ")) %>%
+  ungroup()
+
+
+
+```
+
+
+
+
+
+# Household Threshold 5
+
+```{r}
+# Helper function to check if a set of word stems are within a specific word distance in the text
+words_nearby <- function(text, word_stems, distance = 10) {
+  words <- unlist(strsplit(tolower(text), "\\s+"))  # Split text into individual words
+  # Use regular expressions to find positions of words that match the word stems
+  positions <- sapply(word_stems, function(stem) which(grepl(paste0("^", stem), words))) 
+  
+  # If any keyword (or word stem) is not present, return FALSE
+  if (any(sapply(positions, length) == 0)) return(FALSE)
+
+  # Check that all positions are within the specified distance of each other
+  return(all(sapply(1:(length(positions) - 1), function(i) {
+    min(abs(outer(positions[[i]], positions[[i + 1]], "-"))) <= distance
+  })))
+}
+
+
+# Function to process text for IDP Questions using word stems
+process_idp_questions <- function(text, distance = 10) {
+  result <- c(
+    if_else(words_nearby(text, c("forc", "flee"), distance) | words_nearby(text, c("oblig", "flee"), distance), "1", NA_character_),
+    if_else(words_nearby(text, c("reason", "decid", "flee"), distance) | words_nearby(text, c("reason", "flee", "home"), distance), "2", NA_character_),
+    if_else(words_nearby(text, c("liv", "befor", "forc", "flee"), distance) | words_nearby(text, c("resid", "befor", "forc", "leave"), distance), "3", NA_character_),
+    if_else(words_nearby(text, c("cross", "internation", "border"), distance), "4", NA_character_),
+    if_else(words_nearby(text, c("length", "stay", "abroad"), distance) | words_nearby(text, c("long", "stay", "abroad"), distance), "5", NA_character_),
+    if_else(words_nearby(text, c("legal", "document", "stay"), distance) | words_nearby(text, c("legal", "status"), distance) | words_nearby(text, c("primary", "document", "stay"), distance), "6", NA_character_),
+    if_else(words_nearby(text, c("usua", "place", "resid"), distance) | words_nearby(text, c("where", "move", "first"), distance), "7", NA_character_)
+  )
+  return(paste(na.omit(result), collapse = ", "))
+}
+
+# Function to process text for Refugee Questions using word stems
+process_refugee_questions <- function(text, distance = 10) {
+  result <- c(
+    if_else(words_nearby(text, c("always", "liv"), distance), "1", NA_character_),
+    if_else(words_nearby(text, c("which", "countr", "citizen"), distance) | words_nearby(text, c("countr", "citizenship"), distance), "2", NA_character_),
+    if_else(words_nearby(text, c("ever", "flee"), distance), "3", NA_character_),
+    if_else(words_nearby(text, c("reason", "decid", "flee"), distance) | words_nearby(text, c("reason", "flee", "home"), distance), "4", NA_character_),
+    if_else(words_nearby(text, c("cross", "internation", "border"), distance), "5", NA_character_),
+    if_else(words_nearby(text, c("how", "stay", "abroad"), distance), "6", NA_character_),
+    if_else(words_nearby(text, c("appl", "international", "protection"), distance), "7", NA_character_),
+    if_else(words_nearby(text, c("intention", "appl", "international", "protection"), distance), "8", NA_character_),
+    if_else(words_nearby(text, c("outcome", "appl", "international", "protection"), distance), "9", NA_character_),
+    if_else(words_nearby(text, c("document", "stay"), distance) | words_nearby(text, c("legal", "status"), distance), "10", NA_character_)
+  )
+  return(paste(na.omit(result), collapse = ", "))
+}
+
+CORPUS <- CORPUS %>%
+  rowwise() %>%
+  mutate(
+    IDP_Questions = process_idp_questions(Text, distance = 10),
+    Refugee_Questions = process_refugee_questions(Text, distance = 10)
+  ) %>%
+  ungroup()
+
+
+```
+
+
+
+
+
+
+
+
+
+
+
+# Census Recommended Questions
+## Ignore order
+
+
+```{r}
+
+
+# Helper function to check if all words in a phrase are present in the text (ignoring order)
+words_in_text <- function(text, words) {
+  all(sapply(strsplit(words, "\\s+")[[1]], function(word) str_detect(text, word)))
+}
+
+# IDPS
+CORPUS <- CORPUS %>%
+  rowwise() %>%
+  mutate(IDP_Questions = paste(na.omit(c(
+    if_else(words_in_text(tolower(Text), "place usual residence") | words_in_text(tolower(Text), "place usual reside"), "1", NA_character_),
+    if_else(words_in_text(tolower(Text), "where do you reside") | words_in_text(tolower(Text), "where do you live") | words_in_text(tolower(Text), "place where present at time"), "2", NA_character_),
+    if_else(words_in_text(tolower(Text), "country of birth") | words_in_text(tolower(Text), "where born"), "3", NA_character_),
+    if_else(words_in_text(tolower(Text), "duration of residence") | words_in_text(tolower(Text), "how long reside"), "4", NA_character_),
+    if_else(words_in_text(tolower(Text), "place previous residence") | words_in_text(tolower(Text), "previously live"), "5", NA_character_),
+    if_else(words_in_text(tolower(Text), "place of residence at a specified date in the past"), "6", NA_character_),
+    if_else(words_in_text(tolower(Text), "forced to flee") | words_in_text(tolower(Text), "obliged to flee"), "7", NA_character_)
+  )), collapse = ", ")) %>%
+  ungroup()
+
+
+# REFUGEES
+CORPUS <- CORPUS %>%
+  rowwise() %>%
+  mutate(Refugee_Questions = paste(na.omit(c(
+    if_else(words_in_text(tolower(Text), "country of birth") | words_in_text(tolower(Text), "where born"), "1", NA_character_),
+    if_else(words_in_text(tolower(Text), "which country a citizen") | words_in_text(tolower(Text), "country citizenship") | words_in_text(tolower(Text), "nationality") | words_in_text(tolower(Text), "country national"), "2", NA_character_),
+    if_else(words_in_text(tolower(Text), "acquisition citizenship") | words_in_text(tolower(Text), "acquire citizenship") | words_in_text(tolower(Text), "acquisition nationality") | words_in_text(tolower(Text), "acquire nationality"), "3", NA_character_),
+    if_else(words_in_text(tolower(Text), "period arrive country") | words_in_text(tolower(Text), "period arrival country") | words_in_text(tolower(Text), "year arrival country") | words_in_text(tolower(Text), "year arrive country"), "4", NA_character_),
+    if_else(words_in_text(tolower(Text), "reason to flee home") | words_in_text(tolower(Text), "reason for migration"), "5", NA_character_) # We should not ignore order here
+
+  )), collapse = ", ")) %>%
+  ungroup()
+
+
+
+```
+
+
+
+
+```{r}
+
+# Helper function to check if multiple keywords are within a specified distance in the text
+words_nearby <- function(text, keywords, distance) {
+  # Split the text into words
+  text_words <- unlist(strsplit(tolower(text), "\\s+"))
+  
+  # Check for the presence and positions of each keyword (using partial matching)
+  positions <- lapply(keywords, function(keyword) {
+    which(grepl(paste0("\\b", keyword), text_words))
+  })
+  
+  # If any keyword is not found, return FALSE
+  if (any(sapply(positions, length) == 0)) return(FALSE)
+  
+  # Check if the maximum distance between any two words is within the threshold
+  min_pos <- min(unlist(positions))
+  max_pos <- max(unlist(positions))
+  return((max_pos - min_pos) <= distance)
+}
+
+CORPUS <- CORPUS %>%
+  rowwise() %>%
+  mutate(IDP_Questions = paste(na.omit(c(
+    if_else(words_nearby(tolower(Text), c("place", "usual", "residence"), 5), "1", NA_character_),
+    if_else(words_nearby(tolower(Text), c("where", "reside"), 5) | words_nearby(tolower(Text), c("where", "live"), 5) | words_nearby(tolower(Text), c("place", "present", "time"), 5), "2", NA_character_),
+    if_else(words_nearby(tolower(Text), c("country", "birth"), 5) | words_nearby(tolower(Text), c("where", "born"), 5), "3", NA_character_),
+    if_else(words_nearby(tolower(Text), c("duration", "residence"), 5) | words_nearby(tolower(Text), c("how", "long", "reside"), 5), "4", NA_character_),
+    if_else(words_nearby(tolower(Text), c("place", "previous", "residence"), 5) | words_nearby(tolower(Text), c("previously", "live"), 5), "5", NA_character_),
+    if_else(words_nearby(tolower(Text), c("place", "residence", "past"), 5), "6", NA_character_),
+    if_else(words_nearby(tolower(Text), c("forced", "flee"), 5) | words_nearby(tolower(Text), c("obliged", "flee"), 5), "7", NA_character_)
+  )), collapse = ", ")) %>%
+  ungroup()
+
+CORPUS <- CORPUS %>%
+  rowwise() %>%
+  mutate(Refugee_Questions = paste(na.omit(c(
+    if_else(words_nearby(tolower(Text), c("country", "birth"), 5) | words_nearby(tolower(Text), c("where", "born"), 5), "1", NA_character_),
+    if_else(words_nearby(tolower(Text), c("which", "country", "citizen"), 5) | words_nearby(tolower(Text), c("country", "citizenship"), 5) | words_nearby(tolower(Text), c("nationality"), 5) | words_nearby(tolower(Text), c("country", "national"), 5), "2", NA_character_),
+    if_else(words_nearby(tolower(Text), c("acquisition", "citizenship"), 5) | words_nearby(tolower(Text), c("acquire", "citizenship"), 5) | words_nearby(tolower(Text), c("acquisition", "nationality"), 5) | words_nearby(tolower(Text), c("acquire", "nationality"), 5), "3", NA_character_),
+    if_else(words_nearby(tolower(Text), c("period", "arrive", "country"), 5) | words_nearby(tolower(Text), c("period", "arrival", "country"), 5) | words_nearby(tolower(Text), c("year", "arrival", "country"), 5) | words_nearby(tolower(Text), c("year", "arrive", "country"), 5), "4", NA_character_),
+    if_else(words_nearby(tolower(Text), c("reason", "flee"), 5) | words_nearby(tolower(Text), c("reason", "migration"), 5), "5", NA_character_)
+  )), collapse = ", ")) %>%
+  ungroup()
+
+
+
+
+```
+
+
+
+
+
+# Household: All EGRISS Questions
+## IDPs
+
+```{r}
+contains_all_1_to_7 <- function(x) {
+  numbers <- as.numeric(unlist(str_split(x, ", "))) 
+  all(1:7 %in% numbers)  # Check if all numbers from 1 to 7 are present
+}
+
+
+Count_IDP <- CORPUS_Questions %>%
+  filter(sapply(IDP_Questions, contains_all_1_to_7))
+
+Count_IDP
+
+
+
+
+```
+
+
+```{r}
+
+contains_at_least_six <- function(x) {
+  numbers <- as.numeric(unlist(str_split(x, ", "))) 
+  sum(1:7 %in% numbers) >= 3  
+}
+
+
+Count_IDP <- CORPUS_5V %>%
+  filter(sapply(IDP_Questions, contains_at_least_six))
+
+# Print the result
+print(Count_IDP)
+
+```
+
+
+
+
+
+
+
+### Count how many with 5,6 and 7 questions
+
+```{r}
+# Define a function to count how many unique numbers are in the row
+count_unique_numbers <- function(x) {
+  numbers <- as.numeric(unlist(str_split(x, ", ")))  
+  return(length(unique(numbers)))  # Count the number of unique numbers
+}
+
+
+CORPUS <- CORPUS %>%
+  mutate(Num_Unique = sapply(IDP_Questions, count_unique_numbers))
+
+# Count how many rows contain exactly 5, 6, or 7 unique numbers
+IDP_count_5 <- CORPUS %>% filter(Num_Unique == 5) %>% nrow()
+IDP_count_6 <- CORPUS %>% filter(Num_Unique == 6) %>% nrow()
+IDP_count_7 <- CORPUS %>% filter(Num_Unique == 7) %>% nrow()
+
+IDP_count_5
+IDP_count_6
+IDP_count_7
+
+```
+
+
+
+
+
+## Refugees
+
+```{r}
+contains_all_1_to_10 <- function(x) {
+  numbers <- as.numeric(unlist(str_split(x, ", "))) 
+  all(1:10 %in% numbers)  # Check if all numbers from 1 to 10 are present
+}
+
+Count_Refugee <- CORPUS_Questions %>%
+  filter(sapply(Refugee_Questions, contains_all_1_to_10))
+
+Count_Refugee
+
+
+```
+
+```{r}
+
+contains_at_least_six <- function(x) {
+  numbers <- as.numeric(unlist(str_split(x, ", "))) 
+  sum(1:7 %in% numbers) >= 3  
+}
+
+
+Count_IDP <- CORPUS_5V %>%
+  filter(sapply(IDP_Questions, contains_at_least_six))
+
+# Print the result
+print(Count_IDP)
+
+```
+
+
+
+
+
+
+
+
+
+### Count 
+
+```{r}
+# Define a function to count how many unique numbers are in the row
+count_unique_numbers <- function(x) {
+  numbers <- as.numeric(unlist(str_split(x, ", ")))  
+  return(length(unique(numbers)))  # Count the number of unique numbers
+}
+
+
+CORPUS <- CORPUS %>%
+  mutate(Num_Unique = sapply(Refugee_Questions, count_unique_numbers))
+
+R_count_4 <- CORPUS %>% filter(Num_Unique == 4) %>% nrow()
+R_count_5 <- CORPUS %>% filter(Num_Unique == 5) %>% nrow()
+R_count_6 <- CORPUS %>% filter(Num_Unique == 6) %>% nrow()
+R_count_7 <- CORPUS %>% filter(Num_Unique == 7) %>% nrow()
+R_count_8 <- CORPUS %>% filter(Num_Unique == 8) %>% nrow()
+R_count_9 <- CORPUS %>% filter(Num_Unique == 9) %>% nrow()
+R_count_10 <- CORPUS %>% filter(Num_Unique == 10) %>% nrow()
+
+R_count_4
+R_count_5
+R_count_6
+R_count_7
+R_count_8
+R_count_9
+R_count_10
+
+```
+
+
+
+
+# Census: All EGRISS Questions
+## IDPs
+
+```{r}
+contains_all_1_to_7 <- function(x) {
+  numbers <- as.numeric(unlist(str_split(x, ", "))) 
+  all(1:6 %in% numbers)  
+}
+
+
+Count_IDP <- CORPUS_5V %>%
+  filter(sapply(IDP_Questions, contains_all_1_to_7))
+
+Count_IDP
+
+
+
+
+```
+
+
+
+### Count how many with 5,6 and 7 questions
+
+```{r}
+# Define a function to count how many unique numbers are in the row
+count_unique_numbers <- function(x) {
+  numbers <- as.numeric(unlist(str_split(x, ", ")))  
+  return(length(unique(numbers)))  # Count the number of unique numbers
+}
+
+
+CORPUS_Questions <- CORPUS_Questions %>%
+  mutate(Num_Unique = sapply(IDP_Questions, count_unique_numbers))
+
+# Count how many rows contain exactly 5, 6, or 7 unique numbers
+IDP_count_5 <- CORPUS_Questions %>% filter(Num_Unique == 5) %>% nrow()
+IDP_count_6 <- CORPUS_Questions %>% filter(Num_Unique == 6) %>% nrow()
+IDP_count_7 <- CORPUS_Questions %>% filter(Num_Unique == 7) %>% nrow()
+
+IDP_count_5
+IDP_count_6
+IDP_count_7
+
+```
+
+
+
+
+
+## Refugees
+
+```{r}
+contains_all_1_to_5 <- function(x) {
+  numbers <- as.numeric(unlist(str_split(x, ", "))) 
+  all(1:5 %in% numbers)  
+}
+
+Count_Refugee <- CORPUS %>%
+  filter(sapply(Refugee_Questions, contains_all_1_to_5))
+
+Count_Refugee
+
+
+```
+
+
+
+### Count how many with 5 and 4 questions
+
+```{r}
+# Define a function to count how many unique numbers are in the row
+count_unique_numbers <- function(x) {
+  numbers <- as.numeric(unlist(str_split(x, ", ")))  
+  return(length(unique(numbers)))  # Count the number of unique numbers
+}
+
+
+CORPUS_Questions <- CORPUS_Questions %>%
+  mutate(Num_Unique = sapply(Refugee_Questions, count_unique_numbers))
+
+
+R_count_5 <- CORPUS_Questions %>% filter(Num_Unique == 5) %>% nrow()
+R_count_4 <- CORPUS_Questions %>% filter(Num_Unique == 4) %>% nrow()
+
+
+
+R_count_5
+R_count_4
+
+```
+
+
+
+
+```{r}
+saveRDS(CORPUS, "C:/Users/PANA/Desktop/CORPUS_Q.rds")
+
+
+```
+
+
+
+# Count file numbers
+## Get top 10 repetirions of survey questionnaires name 
+
+```{r}
+
+main_dir <- "C:/Users/PANA/OneDrive - UNHCR/MDL/Q_DownloadJuly16"
+
+# List all subfolders
+subfolders <- list.dirs(main_dir, recursive = TRUE, full.names = TRUE)
+
+
+all_files <- c()
+
+# Loop through each subfolder and list all files within it
+for (folder in subfolders) {
+  files_in_folder <- list.files(folder, full.names = FALSE)  # Get file names, not full paths
+  all_files <- c(all_files, files_in_folder)  # Append file names to all_files
+}
+
+# Get the top 10 
+top_10_files <- sort(table(all_files), decreasing = TRUE)[1:10]
+
+
+top_10_files
+
+```
+
+
+## Get unique names
+
+```{r}
+
+main_dir <- "C:/Users/PANA/OneDrive - UNHCR/MDL/Q_DownloadJuly16"
+
+# List all subfolders
+subfolders <- list.dirs(main_dir, recursive = TRUE, full.names = TRUE)
+
+all_files <- c()
+
+# Loop through each subfolder and list all files within it
+for (folder in subfolders) {
+  files_in_folder <- list.files(folder, full.names = FALSE)  # Get file names, not full paths
+  all_files <- c(all_files, files_in_folder)  # Append file names to all_files
+}
+
+# Create a table of file name frequencies
+file_name_counts <- table(all_files)
+
+# Identify file names that are unique (appear exactly once)
+unique_file_names <- file_name_counts[file_name_counts == 1]
+
+# Sum the total number of files with unique file names
+total_unique_files <- sum(unique_file_names)
+
+total_unique_files
+
+```
+
+## Get all count 
+
+```{r}
+
+main_dir <- "C:/Users/PANA/OneDrive - UNHCR/MDL/Q_DownloadJuly16"
+
+# List all subfolders
+subfolders <- list.dirs(main_dir, recursive = TRUE, full.names = TRUE)
+
+all_files <- c()
+
+# Loop through each subfolder and list all files within it
+for (folder in subfolders) {
+  files_in_folder <- list.files(folder, full.names = FALSE)  # Get file names, not full paths
+  all_files <- c(all_files, files_in_folder)  # Append file names to all_files
+}
+
+# Total number of files (including duplicates)
+total_files_count <- length(all_files)
+
+total_files_count
+
+```
+
+
